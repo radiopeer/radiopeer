@@ -1,21 +1,19 @@
 use clap::App;
 use futures::prelude::*;
 use libp2p::{
-    floodsub::{self, Floodsub, FloodsubEvent},
+    floodsub::{self, Floodsub, FloodsubEvent}, //TODO: replace floodsub by gossipsub or episub
     identity,
+    NetworkBehaviour,
+    PeerId,
+    Swarm,
     mdns::{Mdns, MdnsEvent},
     swarm::NetworkBehaviourEventProcess,
     tokio_codec::{FramedRead, LinesCodec},
     tokio_io::{AsyncRead, AsyncWrite},
-    NetworkBehaviour, PeerId, Swarm,
 };
-use secp256k1::rand::thread_rng;
-use secp256k1::Secp256k1;
 use std::fs::File;
 use std::io::prelude::*;
-use std::io::BufReader;
 use std::path::PathBuf;
-use std::str::FromStr;
 
 fn create_home_dir(path: Option<&str>) -> PathBuf {
     match path {
@@ -37,31 +35,36 @@ fn create_home_dir(path: Option<&str>) -> PathBuf {
 }
 
 fn create_keys(
-    create_new: bool,
     home_path: &PathBuf,
-) -> Result<identity::Keypair, Box<std::error::Error>> {
+) -> Result<identity::Keypair, Box<dyn std::error::Error>> {
     let mut key_path = PathBuf::from(home_path);
     key_path.push(".peer_key");
-    if key_path.exists() && !create_new {
-        let f = File::open(key_path)?;
-        let mut f = BufReader::new(f);
-        let mut key_str = String::new();
-        f.read_line(&mut key_str)?;
-        let secret_key = secp256k1::SecretKey::from_str(key_str.as_str())?;
-        let secp = Secp256k1::new();
-        let pub_key = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+    if key_path.exists() {
+        let mut f = File::open(key_path)?;
+        let mut key_buffer = Vec::new();
+        f.read_to_end(&mut key_buffer)?;
 
-        println!("SECRET: {:?}", secret_key);
+        let secret = identity::secp256k1::SecretKey::from_bytes(key_buffer)?;
+        let keypair = identity::secp256k1::Keypair::from(secret);
 
-        Ok(identity::Keypair::generate_ed25519())
+        Ok(identity::Keypair::Secp256k1(keypair))
     } else {
         let mut key_file = File::create(key_path)?;
-        let secp = Secp256k1::new();
-        let (sec, pubk) = secp.generate_keypair(&mut thread_rng());
-        key_file.write_all(&format!("{}", sec).into_bytes())?;
+        let keypair = identity::secp256k1::Keypair::generate();
+        let secret = keypair.secret();
+        // TODO: use asn1_der to store keys
+        // https://github.com/kizzycode/asn1_der
+        key_file.write_all(&secret.to_bytes())?;
 
-        Ok(identity::Keypair::generate_ed25519())
+        Ok(identity::Keypair::Secp256k1(keypair))
     }
+}
+
+fn connect(
+    local_key: identity::Keypair,
+) {
+    let local_peer_id = PeerId::from(local_key.public());
+    println!("Local peer id: {:?}", local_peer_id);
 }
 
 fn main() {
@@ -78,6 +81,9 @@ fn main() {
     let path = matches.value_of("path");
     let home_path = create_home_dir(path);
     // TODO: argument that
-    create_keys(false, &home_path);
     println!("Using home path: {}", home_path.display());
+    match create_keys(&home_path){
+        Ok(local_key) => connect(local_key),
+        Err(error) => println!("{}",error)
+    };
 }
