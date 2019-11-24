@@ -1,16 +1,24 @@
 [package]
 name = "radiopeer"
 version = "0.1.0"
-authors = ["E. Fynn <me@enriquefynn.com>"]
+authors = ["E. Fynn <me@enriquefynn.com>", "R. Saramago <deepmarolaest@gmail.com>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 asn1_der = "0.6.1"
 futures = "^0.1"
 libp2p = "^0.13"
 clap = "^2.33"
+structopt = "0.3.3"
 dirs = "^2.0"
-secp256k1 = {version = "^0.16", features = ["rand"]}
-rand = "^0.7"
+serde = { version = "^1.0", features = ["derive"] }
+tokio = "^0.1"
+tokio-stdin-stdout = "^0.1"
+tokio-core = "^0.1"
+tokio-io = "^0.1"
+tokio-stdin = "^0.1"
+rand = "0.7"
+
+futures03 = { package = "futures", version = "0.3.1", features = ["compat"] }
+futures-timer = "0.4.0"
+log = "0.4.8"

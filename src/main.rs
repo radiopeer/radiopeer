@@ -1,86 +1,115 @@
+//! A basic example demonstrating some core APIs and concepts of libp2p.
+//!
+//! In the first terminal window, run:
+//!
+//! ```sh
+//! cargo run
+//! ```
+//!
+//! It will print the PeerId and the listening address, e.g. `Listening on
+//! "/ip4/0.0.0.0/tcp/24915"`
+//!
+//! In the second terminal window, start a new instance of the example with:
+//!
+//! ```sh
+//! cargo run - /ip4/127.0.0.1/tcp/24915
+//! ```
+//!
 use clap::App;
 use futures::prelude::*;
 use libp2p::{
-    floodsub::{self, Floodsub, FloodsubEvent}, //TODO: replace floodsub by gossipsub or episub
+    core::PeerId,
     identity,
-    NetworkBehaviour,
-    PeerId,
-    Swarm,
-    mdns::{Mdns, MdnsEvent},
-    swarm::NetworkBehaviourEventProcess,
     tokio_codec::{FramedRead, LinesCodec},
-    tokio_io::{AsyncRead, AsyncWrite},
+    Swarm,
 };
-use std::fs::File;
-use std::io::prelude::*;
-use std::path::PathBuf;
-
-fn create_home_dir(path: Option<&str>) -> PathBuf {
-    match path {
-        Some(p) => match std::fs::create_dir(p) {
-            Ok(_) => PathBuf::from(p),
-            Err(err) => match err.kind() {
-                std::io::ErrorKind::AlreadyExists => PathBuf::from(p),
-                _ => panic!("Error trying to create dir: {}", err),
-            },
-        },
-        None => match dirs::home_dir().as_mut() {
-            Some(home_dir) => {
-                home_dir.push(".radiopeer");
-                create_home_dir(home_dir.to_str())
-            }
-            None => panic!("Cannot get home folder!"),
-        },
-    }
-}
-
-fn create_keys(
-    home_path: &PathBuf,
-) -> Result<identity::Keypair, Box<dyn std::error::Error>> {
-    let mut key_path = PathBuf::from(home_path);
-    key_path.push(".peer_key");
-    let keypair;
-    if key_path.exists() {
-        let mut f = File::open(key_path)?;
-        let mut key_buffer = Vec::new();
-        f.read_to_end(&mut key_buffer)?;
-        let secret = identity::secp256k1::SecretKey::from_bytes(key_buffer)?;
-        keypair = identity::secp256k1::Keypair::from(secret);
-    } else {
-        let mut key_file = File::create(key_path)?;
-        keypair = identity::secp256k1::Keypair::generate();
-        let secret = keypair.secret();
-        // TODO: use asn1_der to store keys
-        // https://github.com/kizzycode/asn1_der
-        key_file.write_all(&secret.to_bytes())?;
-    }
-    Ok(identity::Keypair::Secp256k1(keypair))
-}
-
-fn connect(
-    local_key: identity::Keypair,
-) {
-    let local_peer_id = PeerId::from(local_key.public());
-    println!("Local peer id: {:?}", local_peer_id);
-}
+use libp2p::{multiaddr, Multiaddr};
+use log::{error, info, warn};
+use radiopeer::behaviour::Behaviour;
+use radiopeer::params::*;
+use radiopeer::utils::*;
+use structopt::StructOpt;
 
 fn main() {
-    let matches = App::new("radiopeer")
-        .version("0.1.0")
-        .author("Spec")
-        .args_from_usage(
-            "
-            --path=[path] 'Sets the home folder'
-        ",
-        )
-        .get_matches();
+    let opt = Params::from_args();
+    let path = opt.path;
+    let port = opt.port.unwrap_or(0);
 
-    let path = matches.value_of("path");
-    let home_path = create_home_dir(path);
-    // TODO: argument that
+    let home_path = create_home_dir(path.as_ref().map(String::as_str));
+    // // TODO: argument that
     println!("Using home path: {}", home_path.display());
-    match create_keys(&home_path){
-        Ok(local_key) => connect(local_key),
-        Err(error) => println!("{}",error)
+    let local_key = create_keys(&home_path).unwrap();
+    let local_public = local_key.public();
+    let local_peer_id = PeerId::from(local_key.public());
+    println!("Local peer id: {}", local_peer_id);
+    // Create a transport.
+    let transport = libp2p::build_development_transport(local_key);
+    let mut swarm = {
+        let user_agent = format!(
+            "{} ({})",
+            "radiopeer",
+            opt.nodename.unwrap_or("robot".to_owned())
+        );
+        let behaviour = Behaviour::new(user_agent, local_public.clone());
+        // behaviour.kademlia.bootstrap();
+        Swarm::new(transport, behaviour, local_peer_id)
     };
+    // Read full lines from stdin
+    let stdin = tokio_stdin_stdout::stdin(0);
+    let mut framed_stdin = FramedRead::new(stdin, LinesCodec::new());
+    let addr = format!("/ip4/0.0.0.0/tcp/{}", port);
+
+    // Format: /ip4/<ip>/tcp/<port>/p2p/<hash>
+    for bootnode in opt.bootnodes {
+        match parse_str_addr(bootnode.as_str()) {
+            Ok((peer_id, addr)) => {
+                println!("Connecting to bootnode: {} {}", addr, peer_id);
+                swarm.add_self_reported_address(&peer_id, addr);
+            }
+            Err(_) => panic!("Not a valid bootnode address: {}", bootnode),
+        }
+    }
+
+    Swarm::listen_on(&mut swarm, addr.parse().unwrap()).unwrap();
+    // match port {
+    //     Some(port) => {
+    //         // let po = ;
+    //         // let addr = "/ip4/0.0.0.0/tcp/".to_string() + port.parse::<u16>().unwrap().to_string();
+    //         let addr = format!("/ip4/0.0.0.0/tcp/{}", port.parse::<u16>().unwrap());
+    //         Swarm::listen_on(&mut swarm, addr.parse().unwrap()).unwrap();
+    //         // swarm.add_self_reported_address(&args[2].parse().unwrap(), args[1].parse().unwrap());
+    //     }
+    //     None => {} // Swarm::listen_on(&mut swarm, "/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+    //                // println!("ADDING PEERS!");
+    //                // swarm.add_self_reported_address(&args[2].parse().unwrap(), args[1].parse().unwrap());
+    // }
+    // Kick it off
+    let mut listening = false;
+    tokio::run(futures::future::poll_fn(move || -> Result<_, ()> {
+        loop {
+            match framed_stdin.poll().expect("Error while polling stdin") {
+                Async::Ready(Some(line)) => {
+                    // swarm.floodsub.publish(&floodsub_topic, line.as_bytes())
+                    println!("{:?}", line);
+                }
+                Async::Ready(None) => panic!("Stdin closed"),
+                Async::NotReady => break,
+            };
+        }
+        loop {
+            match swarm.poll().expect("Error while polling swarm") {
+                Async::Ready(Some(event)) => println!("{:?}", event),
+                Async::Ready(None) | Async::NotReady => {
+                    if !listening {
+                        if let Some(a) = Swarm::listeners(&swarm).next() {
+                            println!("Listening on {:?}", a);
+                            listening = true;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        Ok(Async::NotReady)
+    }));
 }
